@@ -97,8 +97,8 @@ kernel void shuffleCoefficients(device const MeshControlPoint* inVertices [[buff
         R,
         G,
         B,
-        x,
-        y,
+        int(x),
+        int(y),
     };
     result[i] = intermediateVertex;
 }

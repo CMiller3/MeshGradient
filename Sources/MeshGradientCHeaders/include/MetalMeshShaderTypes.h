@@ -78,8 +78,8 @@ typedef struct
     simd_float4x4 G;
     simd_float4x4 B;
     
-    unsigned int x;
-    unsigned int y;
+    int x;
+    int y;
     
 } MeshIntermediateVertex;
 
