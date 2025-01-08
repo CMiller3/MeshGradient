@@ -35,13 +35,12 @@ struct MetalMemoryTracker {
 }
 
 final class MTLComputeNoiseFunction {
-    private weak var _noiseTexture: MTLTexture?
+    private var _noiseTexture: MTLTexture?
     private var lastViewportSize: simd_float2 = .zero
     private let device: MTLDevice
     private let pipelineState: MTLComputePipelineState
     private var memoryTracker = MetalMemoryTracker.shared
     private let textureIdentifier = "NoiseTexture"
-    private var textureDescriptor: MTLTextureDescriptor?
     
     init(device: MTLDevice, library: MTLLibrary) throws {
         self.device = device
@@ -57,7 +56,6 @@ final class MTLComputeNoiseFunction {
     func purgeTextures() {
         _noiseTexture = nil
         lastViewportSize = .zero
-        textureDescriptor = nil
         memoryTracker.untrack(identifier: textureIdentifier)
     }
     
@@ -68,7 +66,7 @@ final class MTLComputeNoiseFunction {
             height: height,
             mipmapped: false
         )
-        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget, .pixelFormatView]
+        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
         descriptor.storageMode = device.hasUnifiedMemory ? .shared : .private
         return descriptor
     }
@@ -82,20 +80,45 @@ final class MTLComputeNoiseFunction {
         let width = Int(viewportSize.x)
         let height = Int(viewportSize.y)
         
-        // Only recreate texture descriptor if viewport size changes
-        if lastViewportSize != viewportSize {
-            textureDescriptor = createTextureDescriptor(width: width, height: height)
-            lastViewportSize = viewportSize
+        // Reuse existing texture if size hasn't changed
+        if lastViewportSize == viewportSize, let existingTexture = _noiseTexture {
+            guard let commandBuffer = commandQueue.makeCommandBuffer(),
+                  let encoder = commandBuffer.makeComputeCommandEncoder()
+            else { return existingTexture }
+            
+            encoder.setComputePipelineState(pipelineState)
+            encoder.setTexture(existingTexture, index: Int(ComputeNoiseInputIndexOutputTexture.rawValue))
+            
+            var uniformsCopy = uniforms
+            encoder.setBytes(&uniformsCopy,
+                           length: MemoryLayout.size(ofValue: uniformsCopy),
+                           index: Int(ComputeNoiseInputIndexUniforms.rawValue))
+            
+            let threadgroupCounts = MTLSize(width: 8, height: 8, depth: 1)
+            let threadgroups = MTLSize(
+                width: (width + threadgroupCounts.width - 1) / threadgroupCounts.width,
+                height: (height + threadgroupCounts.height - 1) / threadgroupCounts.height,
+                depth: 1
+            )
+            
+            encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupCounts)
+            encoder.endEncoding()
+            
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            
+            return existingTexture
         }
         
-        guard let descriptor = textureDescriptor,
-              let noiseTexture = device.makeTexture(descriptor: descriptor),
+        // Create new texture if needed
+        let descriptor = createTextureDescriptor(width: width, height: height)
+        guard let noiseTexture = device.makeTexture(descriptor: descriptor),
               let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder()
         else { return nil }
         
         // Track memory usage
-        let memoryUsage = width * height * 4 // Always 4 bytes per pixel for RGBA8
+        let memoryUsage = width * height * 4
         memoryTracker.track(bytes: memoryUsage, identifier: textureIdentifier)
         
         let threadgroupCounts = MTLSize(width: 8, height: 8, depth: 1)
@@ -119,7 +142,9 @@ final class MTLComputeNoiseFunction {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         
+        lastViewportSize = viewportSize
         _noiseTexture = noiseTexture
+        
         return noiseTexture
     }
 }
