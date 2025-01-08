@@ -60,25 +60,7 @@ final class MTLComputeNoiseFunction {
     }
     
     private func selectOptimalPixelFormat(for device: MTLDevice) -> MTLPixelFormat {
-        // Check for best compression support in order of efficiency
-        if device.supportsFamily(.apple7) {
-            return .bgra8Unorm_srgb // Most efficient on modern Apple Silicon
-        } else if device.supportsFamily(.apple6) && device.supportsTexture(descriptor: {
-            let desc = MTLTextureDescriptor()
-            desc.pixelFormat = .astc_4x4_ldr
-            return desc
-        }())) {
-            return .astc_4x4_ldr // Best compression ratio ~4:1
-        } else if device.supportsFamily(.apple3) && device.supportsTexture(descriptor: {
-            let desc = MTLTextureDescriptor()
-            desc.pixelFormat = .bc7_rgbaUnorm
-            return desc
-        }())) {
-            return .bc7_rgbaUnorm // Good quality compression ~4:1
-        } else if device.supportsFamily(.apple3) {
-            return .rgb9e5Float // Compressed floating point, good for gradients
-        }
-        return .bgra8Unorm // Fallback, still relatively efficient
+        return .bgra8Unorm_srgb // Most efficient on modern Apple Silicon
     }
     
     private func optimizeTextureDescriptor(_ descriptor: MTLTextureDescriptor, width: Int, height: Int) {
