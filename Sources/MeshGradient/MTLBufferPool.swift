@@ -4,6 +4,10 @@ final class MTLBufferPool {
     private struct BufferKey: Hashable {
         let length: Int
         let options: MTLResourceOptions
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(length)
+            hasher.combine(options.rawValue)
+        }
     }
     
     private struct BufferEntry {
