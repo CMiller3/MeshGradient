@@ -1,4 +1,3 @@
-
 import Metal
 
 final class MTLBufferPool {
@@ -6,6 +5,7 @@ final class MTLBufferPool {
     private var pool: [Int: [UInt: ContiguousArray<MTLBuffer>]] = [:]
     private let device: MTLDevice
     private let monitor = NSObject()
+    private let maxBuffersPerSize = 5  // Limit buffers per size/options combination
     
     init(device: MTLDevice) {
         self.device = device
@@ -30,7 +30,18 @@ final class MTLBufferPool {
             defer { objc_sync_exit(monitor) }
             
             guard let newValue = newValue else { return }
-            pool[length, default: [:]][resourceOptions.rawValue, default: []].append(newValue)
+            var buffers = pool[length, default: [:]][resourceOptions.rawValue, default: []]
+            if buffers.count < maxBuffersPerSize {
+                buffers.append(newValue)
+                pool[length, default: [:]][resourceOptions.rawValue] = buffers
+            }
+            // If we exceed maxBuffersPerSize, we let the buffer be deallocated
         }
+    }
+    
+    func cleanup() {
+        objc_sync_enter(monitor)
+        defer { objc_sync_exit(monitor) }
+        pool.removeAll()
     }
 }

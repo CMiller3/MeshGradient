@@ -1,4 +1,3 @@
-
 import Foundation
 import simd
 
@@ -30,11 +29,12 @@ public final class MeshAnimator: MeshDataProvider {
         
         mutating func bumpNextFrame() -> ControlPoint {
             completionFactor += scaleFactor
+            if completionFactor > 1 {
+                completionFactor = 1
+            }
             var step = (finalControlPoint - startPoint)
-            
-            let easedCompletionFactor = completionFactor * completionFactor * (3 - 2 * completionFactor);
+            let easedCompletionFactor = completionFactor * completionFactor * (3 - 2 * completionFactor)
             step.scale(by: easedCompletionFactor)
-            
             return startPoint + step
         }
         
@@ -43,56 +43,65 @@ public final class MeshAnimator: MeshDataProvider {
         }
     }
     
-	private let initialGrid: Grid<ControlPoint>
-    public var configuration: Configuration
-	private var animationParameters: Grid<AnimationFrameControlPoint>
+    // Use weak reference to configuration to avoid retain cycles
+    private weak var configurationRef: AnyObject?
+    private var _configuration: Configuration
+    public var configuration: Configuration {
+        get { _configuration }
+        set {
+            _configuration = newValue
+            configurationRef = newValue as? AnyObject
+        }
+    }
     
-	public init(grid: Grid<ControlPoint>, configuration: Configuration) {
-        self.initialGrid = grid
-        self.configuration = configuration
+    private let gridSize: (width: Int, height: Int)
+    private var animationParameters: Grid<AnimationFrameControlPoint>
+    
+    public init(grid: Grid<ControlPoint>, configuration: Configuration) {
+        self.gridSize = (grid.width, grid.height)
+        self._configuration = configuration
+        self.configurationRef = configuration as? AnyObject
         
         self.animationParameters = Grid<AnimationFrameControlPoint>(repeating: .zero, width: grid.width, height: grid.height)
         
         for y in 0 ..< animationParameters.height {
             for x in 0 ..< animationParameters.width {
-				animationParameters[x, y] = generateNextAnimationEndpoint(x: x, y: y, gridWidth: grid.width, gridHeight: grid.height, startPoint: grid[x, y])
+                animationParameters[x, y] = generateNextAnimationEndpoint(x: x, y: y, startPoint: grid[x, y])
             }
         }
     }
     
     public var grid: Grid<ControlPoint> {
         var resultGrid = Grid<ControlPoint>(repeating: .zero,
-                                            width: animationParameters.width,
-                                            height: animationParameters.height)
+                                          width: animationParameters.width,
+                                          height: animationParameters.height)
         
         for y in 0 ..< animationParameters.height {
             for x in 0 ..< animationParameters.width {
                 let i = animationParameters.index(x: x, y: y)
                 resultGrid[i] = animationParameters[i].bumpNextFrame()
                 if animationParameters[i].completionFactor >= 1 {
-					animationParameters[i] = generateNextAnimationEndpoint(x: x, y: y, gridWidth: resultGrid.width, gridHeight: resultGrid.height, startPoint: resultGrid[i])
+                    animationParameters[i] = generateNextAnimationEndpoint(x: x, y: y, startPoint: resultGrid[i])
                 }
             }
         }
         return resultGrid
     }
     
-	private func generateNextAnimationEndpoint(x: Int, y: Int, gridWidth: Int, gridHeight: Int, startPoint: ControlPoint) -> AnimationFrameControlPoint {
-		let animationDuration = Double.random(in: configuration.animationSpeedRange)
+    private func generateNextAnimationEndpoint(x: Int, y: Int, startPoint: ControlPoint) -> AnimationFrameControlPoint {
+        let animationDuration = Double.random(in: configuration.animationSpeedRange)
         let scaleFactor = (1 / Double(configuration.framesPerSecond)) / animationDuration
-        var randomizedControlPoint = initialGrid[x, y]
+        var randomizedControlPoint = startPoint
         
-		configuration.meshRandomizer.locationRandomizer(&randomizedControlPoint.location, x, y, gridWidth, gridHeight)
-		
-		configuration.meshRandomizer.turbulencyRandomizer(&randomizedControlPoint.uTangent, x, y, gridWidth, gridHeight)
-		configuration.meshRandomizer.turbulencyRandomizer(&randomizedControlPoint.vTangent, x, y, gridWidth, gridHeight)
-		
-		configuration.meshRandomizer.colorRandomizer(&randomizedControlPoint.color, randomizedControlPoint.color, x, y, gridWidth, gridHeight)
+        configuration.meshRandomizer.locationRandomizer(&randomizedControlPoint.location, x, y, gridSize.width, gridSize.height)
+        configuration.meshRandomizer.turbulencyRandomizer(&randomizedControlPoint.uTangent, x, y, gridSize.width, gridSize.height)
+        configuration.meshRandomizer.turbulencyRandomizer(&randomizedControlPoint.vTangent, x, y, gridSize.width, gridSize.height)
+        configuration.meshRandomizer.colorRandomizer(&randomizedControlPoint.color, randomizedControlPoint.color, x, y, gridSize.width, gridSize.height)
         
         return AnimationFrameControlPoint(finalControlPoint: randomizedControlPoint,
-                                          startPoint: startPoint,
-                                          completionFactor: 0,
-                                          scaleFactor: scaleFactor)
+                                        startPoint: startPoint,
+                                        completionFactor: 0,
+                                        scaleFactor: scaleFactor)
     }
     
 }

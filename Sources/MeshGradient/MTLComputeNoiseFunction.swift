@@ -1,5 +1,3 @@
-
-
 import Foundation
 import Metal
 import simd
@@ -69,11 +67,14 @@ final class MTLComputeNoiseFunction {
 }
 extension MTLTexture {
     func getPixels<T>(mipmapLevel: Int = 0) -> UnsafeMutablePointer<T> {
-        let fromRegion  = MTLRegionMake2D(0, 0, self.width, self.height)
+        let fromRegion = MTLRegionMake2D(0, 0, self.width, self.height)
         let bytesPerRow = 4 * self.width
-        let data        = UnsafeMutablePointer<T>.allocate(capacity: bytesPerRow * self.height)
-        
+        let data = UnsafeMutablePointer<T>.allocate(capacity: bytesPerRow * self.height)
         self.getBytes(data, bytesPerRow: bytesPerRow, from: fromRegion, mipmapLevel: mipmapLevel)
         return data
+    }
+    
+    func deallocatePixels<T>(_ pixels: UnsafeMutablePointer<T>) {
+        pixels.deallocate()
     }
 }
