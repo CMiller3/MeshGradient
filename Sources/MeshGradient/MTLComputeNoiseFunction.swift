@@ -60,35 +60,11 @@ final class MTLComputeNoiseFunction {
     }
     
     private func selectOptimalPixelFormat(for device: MTLDevice) -> MTLPixelFormat {
-        return .bgra8Unorm_srgb // Most efficient on modern Apple Silicon
-    }
-    
-    private func optimizeTextureDescriptor(_ descriptor: MTLTextureDescriptor, width: Int, height: Int) {
-        // Enable mipmaps for better memory usage when scaling
-        descriptor.mipmapLevelCount = max(1, Int(log2(Double(max(width, height)))))
-        
-        // Set optimal storage mode
+        // Use the most memory-efficient format that's widely supported
         if device.hasUnifiedMemory {
-            descriptor.storageMode = .shared
-        } else {
-            descriptor.storageMode = .private
-            if #available(macOS 11.0, iOS 13.0, *) {
-                descriptor.hazardTrackingMode = .tracked
-            }
+            return .r8Unorm // Single channel is sufficient for noise
         }
-        
-        // Set optimal cache mode
-        if device.hasUnifiedMemory {
-            descriptor.resourceOptions = .storageModeShared
-        } else {
-            descriptor.resourceOptions = .cpuCacheModeWriteCombined
-        }
-        
-        // Enable texture compression
-        descriptor.allowGPUOptimizedContents = true
-        
-        // Set usage for optimal performance
-        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        return .r8Unorm // Fallback to same format
     }
     
     func call(viewportSize: simd_float2, pixelFormat: MTLPixelFormat, commandQueue: MTLCommandQueue, uniforms: NoiseUniforms) -> MTLTexture? {
@@ -97,11 +73,8 @@ final class MTLComputeNoiseFunction {
             return nil 
         }
         
-        // Round viewport size to power of 2 for better compression
-        let width = Int(viewportSize.x.rounded(.up))
-        let height = Int(viewportSize.y.rounded(.up))
-        let roundedWidth = 1 << Int(log2(Double(width)).rounded(.up))
-        let roundedHeight = 1 << Int(log2(Double(height)).rounded(.up))
+        let width = Int(viewportSize.x)
+        let height = Int(viewportSize.y)
         
         if lastViewportSize == viewportSize, let existingTexture = _noiseTexture {
             return existingTexture
@@ -114,39 +87,27 @@ final class MTLComputeNoiseFunction {
         
         let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: selectOptimalPixelFormat(for: device),
-            width: roundedWidth,
-            height: roundedHeight,
-            mipmapped: true
+            width: width,
+            height: height,
+            mipmapped: false
         )
-        optimizeTextureDescriptor(textureDescriptor, width: roundedWidth, height: roundedHeight)
+        
+        // Simple optimization for storage mode
+        textureDescriptor.storageMode = device.hasUnifiedMemory ? .shared : .private
+        textureDescriptor.usage = [.shaderRead, .shaderWrite]
         
         guard let noiseTexture = device.makeTexture(descriptor: textureDescriptor),
               let encoder = commandBuffer.makeComputeCommandEncoder()
         else { return nil }
         
-        // Track memory usage - estimate based on format and compression
-        let bytesPerPixel: Int
-        switch noiseTexture.pixelFormat {
-        case .astc_4x4_ldr, .bc7_rgbaUnorm:
-            bytesPerPixel = 1 // 4:1 compression
-        case .rgb9e5Float:
-            bytesPerPixel = 2 // 2:1 compression
-        case .bgra8Unorm, .bgra8Unorm_srgb:
-            bytesPerPixel = 4
-        default:
-            bytesPerPixel = 4
-        }
-        
-        // Account for mipmaps in memory calculation
-        let mipLevels = textureDescriptor.mipmapLevelCount
-        let totalPixels = (roundedWidth * roundedHeight * 4) / 3 // Geometric series sum for mipmaps
-        let memoryUsage = totalPixels * bytesPerPixel
+        // Track memory usage - r8Unorm uses 1 byte per pixel
+        let memoryUsage = width * height
         memoryTracker.track(bytes: memoryUsage, identifier: textureIdentifier)
         
         let threadgroupCounts = MTLSize(width: 8, height: 8, depth: 1)
         let threadgroups = MTLSize(
-            width: (roundedWidth + threadgroupCounts.width - 1) / threadgroupCounts.width,
-            height: (roundedHeight + threadgroupCounts.height - 1) / threadgroupCounts.height,
+            width: (width + threadgroupCounts.width - 1) / threadgroupCounts.width,
+            height: (height + threadgroupCounts.height - 1) / threadgroupCounts.height,
             depth: 1
         )
         
@@ -170,8 +131,7 @@ final class MTLComputeNoiseFunction {
         #if DEBUG
         print("Noise Texture Details:")
         print(" - Format: \(noiseTexture.pixelFormat)")
-        print(" - Size: \(roundedWidth)x\(roundedHeight)")
-        print(" - Mip Levels: \(mipLevels)")
+        print(" - Size: \(width)x\(height)")
         print(" - Estimated Memory: \(Double(memoryUsage) / 1_000_000.0)MB")
         print("Metal Memory Usage Report:\n\(memoryTracker.memoryReport())")
         #endif
@@ -183,7 +143,7 @@ final class MTLComputeNoiseFunction {
 extension MTLTexture {
     func getPixels<T>(mipmapLevel: Int = 0) -> UnsafeMutablePointer<T> {
         let fromRegion = MTLRegionMake2D(0, 0, self.width, self.height)
-        let bytesPerRow = 4 * self.width
+        let bytesPerRow = self.width  // Adjusted for r8Unorm format
         let data = UnsafeMutablePointer<T>.allocate(capacity: bytesPerRow * self.height)
         self.getBytes(data, bytesPerRow: bytesPerRow, from: fromRegion, mipmapLevel: mipmapLevel)
         return data
