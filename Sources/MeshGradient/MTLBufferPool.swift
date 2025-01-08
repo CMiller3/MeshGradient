@@ -4,10 +4,6 @@ final class MTLBufferPool {
     private struct BufferKey: Hashable {
         let length: Int
         let options: MTLResourceOptions
-        func hash(into hasher: inout Hasher) {
-            hasher.combine(length)
-            hasher.combine(options.rawValue)
-        }
     }
     
     private struct BufferEntry {
@@ -20,8 +16,6 @@ final class MTLBufferPool {
     private let monitor = NSObject()
     private let maxBuffersPerSize = 3  // Reduced from 5
     private let maxBufferAge: TimeInterval = 30  // Seconds before buffer is eligible for cleanup
-    private var memoryTracker = MetalMemoryTracker.shared
-    private let poolIdentifier = "BufferPool"
     
     init(device: MTLDevice) {
         self.device = device
@@ -32,20 +26,10 @@ final class MTLBufferPool {
         }
     }
     
-    private func updateMemoryTracking() {
-        let totalBytes = pool.values.flatMap { $0 }.reduce(0) { sum, entry in
-            sum + entry.buffer.length
-        }
-        memoryTracker.track(bytes: totalBytes, identifier: poolIdentifier)
-    }
-    
     subscript(length: Int, resourceOptions: MTLResourceOptions) -> MTLBuffer? {
         get {
             objc_sync_enter(monitor)
-            defer { 
-                objc_sync_exit(monitor)
-                updateMemoryTracking()
-            }
+            defer { objc_sync_exit(monitor) }
             
             let key = BufferKey(length: length, options: resourceOptions)
             var entries = pool[key, default: []]
@@ -60,10 +44,7 @@ final class MTLBufferPool {
         }
         set {
             objc_sync_enter(monitor)
-            defer { 
-                objc_sync_exit(monitor)
-                updateMemoryTracking()
-            }
+            defer { objc_sync_exit(monitor) }
             
             guard let newValue = newValue else { return }
             let key = BufferKey(length: length, options: resourceOptions)
@@ -79,10 +60,7 @@ final class MTLBufferPool {
     
     private func cleanupOldBuffers() {
         objc_sync_enter(monitor)
-        defer { 
-            objc_sync_exit(monitor)
-            updateMemoryTracking()
-        }
+        defer { objc_sync_exit(monitor) }
         
         let now = Date()
         for (key, entries) in pool {
@@ -91,18 +69,11 @@ final class MTLBufferPool {
                 pool[key] = validEntries
             }
         }
-        
-        #if DEBUG
-        print("Buffer Pool Memory Usage: \(Double(memoryTracker.totalMemoryUsage()) / 1_000_000.0)MB")
-        #endif
     }
     
     func cleanup() {
         objc_sync_enter(monitor)
-        defer { 
-            objc_sync_exit(monitor)
-            memoryTracker.untrack(identifier: poolIdentifier)
-        }
+        defer { objc_sync_exit(monitor) }
         pool.removeAll()
     }
     

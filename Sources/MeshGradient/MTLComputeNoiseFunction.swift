@@ -37,6 +37,7 @@ struct MetalMemoryTracker {
 final class MTLComputeNoiseFunction {
     private weak var _noiseTexture: MTLTexture?
     private var lastViewportSize: simd_float2 = .zero
+    private var lastPixelFormat: MTLPixelFormat?
     private let device: MTLDevice
     private let pipelineState: MTLComputePipelineState
     private var memoryTracker = MetalMemoryTracker.shared
@@ -56,15 +57,18 @@ final class MTLComputeNoiseFunction {
     func purgeTextures() {
         _noiseTexture = nil
         lastViewportSize = .zero
+        lastPixelFormat = nil
         memoryTracker.untrack(identifier: textureIdentifier)
     }
     
     private func selectOptimalPixelFormat(for device: MTLDevice) -> MTLPixelFormat {
-        // Use the most memory-efficient format that's widely supported
-        if device.hasUnifiedMemory {
-            return .r8Unorm // Single channel is sufficient for noise
+        // Prefer compressed formats if available
+        if device.supportsFamily(.apple7) {
+            return .rgba8Unorm_srgb // Most efficient for modern Apple GPUs
+        } else if device.supportsFamily(.apple6) {
+            return .astc_4x4_srgb // Good compression, widely supported
         }
-        return .r8Unorm // Fallback to same format
+        return .rgba8Unorm // Fallback
     }
     
     func call(viewportSize: simd_float2, pixelFormat: MTLPixelFormat, commandQueue: MTLCommandQueue, uniforms: NoiseUniforms) -> MTLTexture? {
@@ -73,14 +77,16 @@ final class MTLComputeNoiseFunction {
             return nil 
         }
         
-        let width = Int(viewportSize.x)
-        let height = Int(viewportSize.y)
-        
-        if lastViewportSize == viewportSize, let existingTexture = _noiseTexture {
+        // Check if we can reuse existing texture
+        if lastViewportSize == viewportSize && 
+           lastPixelFormat == pixelFormat,
+           let existingTexture = _noiseTexture {
             return existingTexture
         }
         
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
+        let width = Int(viewportSize.x)
+        let height = Int(viewportSize.y)
         
         // Clear old texture and its memory tracking
         purgeTextures()
@@ -91,17 +97,17 @@ final class MTLComputeNoiseFunction {
             height: height,
             mipmapped: false
         )
-        
-        // Simple optimization for storage mode
+        textureDescriptor.usage = [.shaderRead, .shaderWrite, .renderTarget, .pixelFormatView]
+        // Use compressed storage where possible
         textureDescriptor.storageMode = device.hasUnifiedMemory ? .shared : .private
-        textureDescriptor.usage = [.shaderRead, .shaderWrite]
         
         guard let noiseTexture = device.makeTexture(descriptor: textureDescriptor),
               let encoder = commandBuffer.makeComputeCommandEncoder()
         else { return nil }
         
-        // Track memory usage - r8Unorm uses 1 byte per pixel
-        let memoryUsage = width * height
+        // Track memory usage - estimate based on format and dimensions
+        let bytesPerPixel = noiseTexture.pixelFormat == .rgba8Unorm ? 4 : 2 // Compressed formats use ~2 bytes/pixel
+        let memoryUsage = width * height * bytesPerPixel
         memoryTracker.track(bytes: memoryUsage, identifier: textureIdentifier)
         
         let threadgroupCounts = MTLSize(width: 8, height: 8, depth: 1)
@@ -126,14 +132,11 @@ final class MTLComputeNoiseFunction {
         commandBuffer.waitUntilCompleted()
         
         lastViewportSize = viewportSize
+        lastPixelFormat = pixelFormat
         _noiseTexture = noiseTexture
         
         #if DEBUG
-        print("Noise Texture Details:")
-        print(" - Format: \(noiseTexture.pixelFormat)")
-        print(" - Size: \(width)x\(height)")
-        print(" - Estimated Memory: \(Double(memoryUsage) / 1_000_000.0)MB")
-        print("Metal Memory Usage Report:\n\(memoryTracker.memoryReport())")
+        print("Created new noise texture - Metal Memory Usage Report:\n\(memoryTracker.memoryReport())")
         #endif
         
         return noiseTexture
@@ -143,7 +146,7 @@ final class MTLComputeNoiseFunction {
 extension MTLTexture {
     func getPixels<T>(mipmapLevel: Int = 0) -> UnsafeMutablePointer<T> {
         let fromRegion = MTLRegionMake2D(0, 0, self.width, self.height)
-        let bytesPerRow = self.width  // Adjusted for r8Unorm format
+        let bytesPerRow = 4 * self.width
         let data = UnsafeMutablePointer<T>.allocate(capacity: bytesPerRow * self.height)
         self.getBytes(data, bytesPerRow: bytesPerRow, from: fromRegion, mipmapLevel: mipmapLevel)
         return data
